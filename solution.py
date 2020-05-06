@@ -4,10 +4,7 @@ import matplotlib.pyplot as plt
 import copy
 from pyeasyga import pyeasyga
 import random 
-from statistics import mean
 
-# config
-calc_pearson = True
 explore_hyperparams = False
 
 # read to a dataframe
@@ -39,14 +36,14 @@ min_rating = min(df['rating'])
 max_rating = max(df['rating'])
 
 rand_user_id = df.sample(1).iloc[0]['user_id']
-user_ratings = df[df['user_id'] == rand_user_id]['item_id', 'rating']
+user_ratings = df.loc[df['user_id'] == rand_user_id][['item_id', 'rating']]
 
 # pearson neighbourhood
 
 # get the representation array that is going to be used for pearson correlation computation
 def get_pearson_array_from_id(usr_id):
     usr_mean = cached_means[usr_id]
-    usr_ratings = df[df['user_id'] == usr_id]['rating']
+    usr_ratings = df[df['user_id'] == usr_id][['rating']]
     usr_ratings['rating'] = usr_ratings['rating'] - usr_mean
     rat = np.zeros(n_items)
 
@@ -60,15 +57,16 @@ def get_pearson_array_from_id(usr_id):
 
 print("Calculating pearson correlations:")
 selected_usr_arr = get_pearson_array_from_id(rand_user_id)
-user_ids.remove(rand_user_id)
+user_ids = np.delete(user_ids, np.where(user_ids == rand_user_id))
 
-_a = [(x, get_pearson_array_from_id(x)) for x in rand_user_id]
-best_neigh = [(x[0], np.corrcoef(selected_usr_arr, x[1]), x[1]) for x in _a]
+_a = [(x, get_pearson_array_from_id(x)) for x in user_ids]
+
+best_neigh = [(x[0], np.corrcoef(selected_usr_arr, x[1])[0, 1], x[1]) for x in _a]
 best_neigh.sort(key=lambda x: x[1], reverse=True)
 
 print("Top 10 Neighborhood (user id, r):")
 for x in best_neigh[:10]:
-    print(x)
+    print(f'({x[0]}, {x[1]})')
 
 print()
 
@@ -91,8 +89,8 @@ def create_individual(ratings):
 
 def crossover(parent_1, parent_2):
     index = random.randrange(1, len(parent_1))
-    child_1 = parent_1[:index] + parent_2[index:]
-    child_2 = parent_2[:index] + parent_1[index:]
+    child_1 = np.concatenate([parent_1[:index], parent_2[index:]])
+    child_2 = np.concatenate([parent_2[:index], parent_1[index:]])
     
     # these should already be 'legal'
     return child_1, child_2
@@ -110,7 +108,7 @@ histories = []
 
 # [population, crossover, mutation]
 config = [
-    [20, 0.6, 0.0],
+    [20, 0.6, 0.001],
 ]
 
 if explore_hyperparams:
@@ -147,13 +145,18 @@ fitness_hist = []
 population = 0
 _population_counter = 0
 
+__e = 0
 # i opened an issue for that on their github: https://github.com/remiomosowon/pyeasyga/issues/12
 # if they fix it fast I'll integrate it
 # or maybe I'll implement it for them. I don't know. Too lazy to write tests
 ga = None
 def early_stop_callback():
-    global epochs, prev_fitness, early_stopped, best_person, best_person_count, max_best_person_count, ga, _best_person
+    global epochs, prev_fitness, early_stopped, best_person, best_person_count, max_best_person_count, ga, _best_person, __e
 
+    __e = __e + 1
+    if (__e % 20 == 0):
+        print(f'Epoch: {__e}')
+        print(f'Best fit: {best_person}')
     if early_stopped:
         return
     
@@ -177,13 +180,14 @@ def early_stop_callback():
 
     if reason is not None:
         early_stopped = True
+        print(f'[Early Stopping] Epoch {epochs}, reason: {reason}')
 
 
 def fitness(individual, data):
     global fitness_hist, _best_person, best_neigh_arrays, population, _population_counter
     cur = np.array(individual) - np.mean(np.array(individual))
     
-    correlations = [np.corrcoef(cur, x) for x in best_neigh_arrays]
+    correlations = [np.corrcoef(cur, x)[0, 1] for x in best_neigh_arrays]
     fitness = np.mean(correlations)
 
     if _best_person is None:
@@ -221,6 +225,7 @@ for c in config:
         early_stopped = False
 
         epochs = 0
+        __e = 0
 
         ga = pyeasyga.GeneticAlgorithm(user_ratings,
                                     population_size=c[0],
