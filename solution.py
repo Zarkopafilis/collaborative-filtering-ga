@@ -44,9 +44,8 @@ user_ratings = df.loc[df['user_id'] == rand_user_id][['item_id', 'rating']]
 def get_pearson_array_from_id(usr_id):
     usr_mean = cached_means[usr_id]
     usr_ratings = df[df['user_id'] == usr_id][['rating']]
-    usr_ratings['rating'] = usr_ratings['rating'] - usr_mean
-    rat = np.zeros(n_items)
-
+    # usr_ratings['rating'] = usr_ratings['rating'] - usr_mean
+    rat = np.full(n_items, usr_mean)
     for _, row in user_ratings.iterrows():
         item_id = row.item_id
         rating = row.rating
@@ -67,8 +66,6 @@ best_neigh.sort(key=lambda x: x[1], reverse=True)
 print("Top 10 Neighborhood (user id, r):")
 for x in best_neigh[:10]:
     print(f'({x[0]}, {x[1]})')
-
-print()
 
 best_neigh_arrays = [x[2] for x in best_neigh]
 
@@ -108,7 +105,8 @@ histories = []
 
 # [population, crossover, mutation]
 config = [
-    [20, 0.6, 0.001],
+    [20, 0.6, 0.0],
+    [20, 0.6, 0.1]
 ]
 
 if explore_hyperparams:
@@ -146,10 +144,39 @@ population = 0
 _population_counter = 0
 
 __e = 0
+def end_of_x_train_times_loop_stats():
+    global __h, histories, best_fit, c
+    __h = np.array(__h)
+    # pad until max_gen
+    histories.append([c, np.mean(__h, axis=0)])
+
+    print()
+    print(f'For config {c}')
+    print(f'Best fit individual: {best_fit}')
+    print(f'Average epochs: {__epochs / 10}')
+    print()
+    print('-----')
+    print()
+
+
+max_generations = 5
+def plot_results():
+    global histories
+    fig, ax = plt.subplots(len(histories))
+    fig.suptitle('Training results')
+    plt.ylabel('average fitness')
+    for i, entry in enumerate(histories):
+        (c, hist) = entry
+        ax[i].plot(hist)
+        ax[i].set_title(str(c))
+
 # i opened an issue for that on their github: https://github.com/remiomosowon/pyeasyga/issues/12
 # if they fix it fast I'll integrate it
 # or maybe I'll implement it for them. I don't know. Too lazy to write tests
+# in the meantime, we do a huge workaround to support it
 ga = None
+
+
 def early_stop_callback():
     global epochs, prev_fitness, early_stopped, best_person, best_person_count, max_best_person_count, ga, _best_person, __e
 
@@ -159,7 +186,7 @@ def early_stop_callback():
         print(f'Best fit: {best_person}')
     if early_stopped:
         return
-    
+
     epochs = epochs + 1
 
     # prev_fitness should go here but the library does not expose
@@ -174,6 +201,8 @@ def early_stop_callback():
         best_person_count = 0
         best_person = _best_person
 
+    fitness_hist.append(best_person)
+
     reason = None
     if best_person_count > max_best_person_count:
         reason = f'best person did not improve for {best_person_count} cycles'
@@ -181,13 +210,13 @@ def early_stop_callback():
     if reason is not None:
         early_stopped = True
         print(f'[Early Stopping] Epoch {epochs}, reason: {reason}')
+        end_training(early_stopped=True)
 
 
 def fitness(individual, data):
     global fitness_hist, _best_person, best_neigh_arrays, population, _population_counter
-    cur = np.array(individual) - np.mean(np.array(individual))
-    
-    correlations = [np.corrcoef(cur, x)[0, 1] for x in best_neigh_arrays]
+    # cur = np.array(individual) - np.mean(np.array(individual))
+    correlations = [np.corrcoef(individual, x)[0, 1] for x in best_neigh_arrays]
     fitness = np.mean(correlations)
 
     if _best_person is None:
@@ -201,68 +230,88 @@ def fitness(individual, data):
     # finished an epoch
     if _population_counter % population == 0:
         early_stop_callback()
-    
+
     return fitness
 
-print('Starting training')
-for c in config:
-    __h = []
-    __epochs = 0
-    best_fit = None
-    print(f'CONFIG: {c}')
+def start_training(end_callback):
+    global user_ratings, create_individual, crossover, mutate, fitness, max_generations, ga, c
+    ga = pyeasyga.GeneticAlgorithm(user_ratings,
+                                   population_size=c[0],
+                                   generations=max_generations,
+                                   crossover_probability=c[1],
+                                   mutation_probability=c[2],
+                                   elitism=True,
+                                   maximise_fitness=True)
+    ga.create_individual = create_individual
+    ga.crossover_function = crossover
+    ga.mutate_function = mutate
+    ga.fitness_function = fitness
+    # we could also define a custom selection function
 
-    population = c[0]
-    for i in range(10):
-        print(f'    run: {i}')
-        _population_counter = 0
-        fitness_hist = []
-        best_person = None
-        best_person_count = 0
+    ga.run()
+    end_callback()
 
-        max_best_person_count = 10
+def end_training(early_stopped=False):
+    global best_fit, __h, __epochs, max_generations
 
-        prev_fitness = None
-        early_stopped = False
+    if not early_stopped:
+        print(f'Completed maximum generations ({max_generations}) for this run')
 
-        epochs = 0
-        __e = 0
+    cur_best_fit = ga.best_individual()[0]
+    if best_fit is None or cur_best_fit > best_fit:
+        best_fit = cur_best_fit
 
-        ga = pyeasyga.GeneticAlgorithm(user_ratings,
-                                    population_size=c[0],
-                                    generations=1000,
-                                    crossover_probability=c[1],
-                                    mutation_probability=c[2],
-                                    elitism=True,
-                                    maximise_fitness=True)
-        ga.create_individual = create_individual
-        ga.crossover_function = crossover
-        ga.mutate_function = mutate
-        ga.fitness_function = fitness
-        # we could also define a custom selection function
+    print(f'Current best fit: {cur_best_fit}')
+    padded = np.zeros(max_generations)
+    padded[:len(fitness_hist)] = fitness_hist[:]
+    __h.append(padded)
 
-        ga.run()
-
-        cur_best_fit = fitness(ga.best_individual(), [])
-        if best_fit is None or cur_best_fit > best_fit:
-            best_fit = cur_best_fit
-
-        __h.append(np.array(copy.copy(fitness_hist)))
-        __epochs = __epochs + epochs
-
-    __h = np.array(__h)
-    histories.append(copy.copy(x) for x in[c, np.mean(__h, axis=0)])
-
-    print()
-    print(f'For config {c}')
-    print(f'Best fit individual: {best_fit}')
-    print(f'Average epochs: {__epochs / 10}')
+    __epochs = __epochs + epochs
 
 
-fig, ax = plt.subplots(len(histories))
-fig.suptitle('Training results')
+    next_c = next(config_generator, None)
+    if next_c is None:
+        plot_results()
+        input('Finished training')
+    else:
+        start_training(end_training)
 
-for i, entry in enumerate(histories):
-    (c, hist) = entry
-    ax[i].plot(hist)
-    ax[i].xtitle(str(c))
-    ax[i].ytitle('average fitness')
+
+def config_gen():
+    global c, best_fit, population, fitness_hist, best_person, best_person_count, max_best_person_count, prev_fitness, early_stopped, epochs
+    global __h, __epochs, __e
+
+    for _c in config:
+        c = _c
+        __h = []
+        __epochs = 0
+        best_fit = None
+        print(f'CONFIG: {c}')
+
+        population = c[0]
+        for i in range(10):
+            print(f'    run: {i}')
+            _population_counter = 0
+            fitness_hist = []
+            best_person = None
+            best_person_count = 0
+
+            max_best_person_count = 10
+
+            prev_fitness = None
+            early_stopped = False
+
+            epochs = 0
+            __e = 0
+
+            yield c
+
+        end_of_x_train_times_loop_stats()
+
+    plot_results()
+
+
+config_generator = config_gen()
+next(config_generator)
+start_training(end_training)
+
