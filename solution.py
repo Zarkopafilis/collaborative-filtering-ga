@@ -3,8 +3,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import copy
 from pyeasyga import pyeasyga
-import random 
+import random
+import pickle
 
+max_generations = 1000
+max_runs = 10 # per hyperparameter configuration
 explore_hyperparams = False
 
 # read to a dataframe
@@ -92,12 +95,18 @@ def crossover(parent_1, parent_2):
     # these should already be 'legal'
     return child_1, child_2
 
+# you can tell that this gets run with probability per-individual,
+# but we want probability per single gene
 def mutate(individual):
-    mutate_index = random.randrange(len(individual))
-    mutate_val = random.randrange(1, 5)
+    global c
+    mutate_prob = c[2]
 
-    individual[mutate_index] = mutate_val
-    # if we flip some already 
+    probabilities = np.random.rand(len(individual))
+    mutate_indices = np.argwhere(probabilities > mutate_prob)
+
+    all_random = np.random.randint(1, high=5, size=len(individual)) 
+    individual[mutate_indices] = all_random[mutate_indices]
+
     fix_representation(individual)
 
 
@@ -123,6 +132,8 @@ if explore_hyperparams:
     ]
 # end if explore_hyperparams
 
+# __xx variables = internal inter-evolution cycle usage
+
 # early stop parameters
 best_person = None
 best_person_count = 0
@@ -142,8 +153,9 @@ fitness_hist = []
 
 population = 0
 _population_counter = 0
-
+__h = []
 __e = 0
+
 def end_of_x_train_times_loop_stats():
     global __h, histories, best_fit, c
     __h = np.array(__h)
@@ -159,24 +171,28 @@ def end_of_x_train_times_loop_stats():
     print()
 
 
-max_generations = 5
 def plot_results():
     global histories
+    with open('histories.pkl', 'wb') as f:
+        pickle.dump(histories, f)
+
     fig, ax = plt.subplots(len(histories))
+    
     fig.suptitle('Training results')
-    plt.ylabel('average fitness')
     for i, entry in enumerate(histories):
+        plt.ylabel('average fitness')
         (c, hist) = entry
         ax[i].plot(hist)
         ax[i].set_title(str(c))
+
+    plt.show()
+    input('Plotted results')
 
 # i opened an issue for that on their github: https://github.com/remiomosowon/pyeasyga/issues/12
 # if they fix it fast I'll integrate it
 # or maybe I'll implement it for them. I don't know. Too lazy to write tests
 # in the meantime, we do a huge workaround to support it
 ga = None
-
-
 def early_stop_callback():
     global epochs, prev_fitness, early_stopped, best_person, best_person_count, max_best_person_count, ga, _best_person, __e
 
@@ -239,8 +255,8 @@ def start_training(end_callback):
                                    population_size=c[0],
                                    generations=max_generations,
                                    crossover_probability=c[1],
-                                   mutation_probability=c[2],
-                                   elitism=True,
+                                   mutation_probability=1.0,
+                                   elitism=False,
                                    maximise_fitness=True)
     ga.create_individual = create_individual
     ga.crossover_function = crossover
@@ -272,7 +288,7 @@ def end_training(early_stopped=False):
     next_c = next(config_generator, None)
     if next_c is None:
         plot_results()
-        input('Finished training')
+        print('Finished training')
     else:
         start_training(end_training)
 
@@ -289,7 +305,7 @@ def config_gen():
         print(f'CONFIG: {c}')
 
         population = c[0]
-        for i in range(10):
+        for i in range(max_runs):
             print(f'    run: {i}')
             _population_counter = 0
             fitness_hist = []
@@ -314,4 +330,3 @@ def config_gen():
 config_generator = config_gen()
 next(config_generator)
 start_training(end_training)
-
